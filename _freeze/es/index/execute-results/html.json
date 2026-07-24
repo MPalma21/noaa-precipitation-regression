@@ -1,0 +1,17 @@
+{
+  "hash": "99c818a6dd28c4b614197e49634668a5",
+  "result": {
+    "engine": "knitr",
+    "markdown": "---\ntitle: \"Predicción de precipitación horaria en el aeropuerto JFK\"\nsubtitle: \"Comparación de regresiones con evaluación temporal\"\nauthor: \"Miguelangel Palma Rojas\"\ndate: last-modified\nlang: es\n---\n\n\n\n## Objetivo\n\nEl notebook predice precipitación horaria a partir de humedad, temperatura, presión y viento. Corrige la evaluación original al ordenar por tiempo, reservar el 20% más reciente como prueba final y utilizar validación cruzada únicamente dentro del periodo de entrenamiento.\n\n## Preparación\n\nEl snapshot contiene 4067 observaciones validadas. Los valores de traza (`T`) se convierten documentadamente en cero pulgadas; se eliminan sufijos numéricos incorrectos y se excluyen registros sin fecha o variable objetivo.\n\n\n::: {.cell}\n\n```{.r .cell-code}\nweather |>\n  summarise(\n    primera_observacion = min(date),\n    ultima_observacion = max(date),\n    celdas_predictoras_faltantes = sum(is.na(across(where(is.numeric))))\n  ) |>\n  knitr::kable()\n```\n\n::: {.cell-output-display}\n\n\n|primera_observacion |ultima_observacion  | celdas_predictoras_faltantes|\n|:-------------------|:-------------------|----------------------------:|\n|2010-01-01 04:51:00 |2018-07-26 10:51:00 |                            4|\n\n\n:::\n:::\n\n\n\n::: {.cell}\n\n```{.r .cell-code}\nplot_precipitation_distribution(weather, \"es\")\n```\n\n::: {.cell-output-display}\n![](index_files/figure-html/unnamed-chunk-2-1.png){fig-alt='Histograma con una gran concentración de observaciones de precipitación horaria en cero.' width=672}\n:::\n:::\n\n\n## Modelos\n\n- **Promedio:** establece el punto mínimo de comparación.\n- **Regresión lineal:** relaciones aditivas interpretables.\n- **Regresión ridge:** regulariza predictores correlacionados y ajusta su penalización mediante validación cruzada.\n- **Regresión polinómica:** permite curvatura conservando una estructura transparente.\n\n## Rendimiento final\n\n\n::: {.cell}\n\n```{.r .cell-code}\nmodel_results$metrics |>\n  tidyr::pivot_wider(names_from = .metric, values_from = .estimate) |>\n  arrange(rmse) |>\n  knitr::kable(digits = 4)\n```\n\n::: {.cell-output-display}\n\n\n|model                 |    mae|   rmse|    rsq|\n|:---------------------|------:|------:|------:|\n|Polynomial regression | 0.0146| 0.0444| 0.0604|\n|Linear regression     | 0.0140| 0.0447| 0.0510|\n|Ridge regression      | 0.0132| 0.0447| 0.0498|\n|Mean baseline         | 0.0120| 0.0458| 0.0000|\n\n\n:::\n:::\n\n\nTodas las métricas utilizan exclusivamente el conjunto temporal de prueba. RMSE penaliza errores grandes, MAE representa el error absoluto típico y R² mide la mejora frente al promedio.\n\n## Interpretación\n\nLa precipitación contiene muchos ceros y es difícil de predecir con pocas mediciones contemporáneas. Un error inferior al baseline es evidencia útil, pero un pronóstico operativo necesitaría variables rezagadas, radar y condiciones atmosféricas.\n\n## Conclusión\n\nLa mejora principal es una evaluación confiable: la selección ocurre antes del periodo final y se reportan varias métricas complementarias.\n\n",
+    "supporting": [
+      "index_files"
+    ],
+    "filters": [
+      "rmarkdown/pagebreak.lua"
+    ],
+    "includes": {},
+    "engineDependencies": {},
+    "preserve": {},
+    "postProcess": true
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "hash": "4bfb095d8cb4ce0ca5dae3de790d6faf",
+  "result": {
+    "engine": "knitr",
+    "markdown": "---\ntitle: \"Predicting Hourly Precipitation at JFK Airport\"\nsubtitle: \"Regression comparison with temporal holdout evaluation\"\nauthor: \"Miguelangel Palma Rojas\"\ndate: last-modified\nlang: en\n---\n\n\n\n## Objective\n\nThis notebook predicts hourly precipitation from humidity, temperature, station pressure, and wind speed. It corrects the original evaluation by sorting observations by time, reserving the latest 20% as a final test set, and using cross-validation only inside the earlier training period.\n\n## Data preparation\n\nThe snapshot contains 4067 validated observations. NOAA trace values (`T`) are documented and converted to zero inches; malformed numeric suffixes are removed; records without a timestamp or outcome are excluded.\n\n\n::: {.cell}\n\n```{.r .cell-code}\nweather |>\n  summarise(\n    first_observation = min(date),\n    last_observation = max(date),\n    missing_predictor_cells = sum(is.na(across(where(is.numeric))))\n  ) |>\n  knitr::kable()\n```\n\n::: {.cell-output-display}\n\n\n|first_observation   |last_observation    | missing_predictor_cells|\n|:-------------------|:-------------------|-----------------------:|\n|2010-01-01 04:51:00 |2018-07-26 10:51:00 |                       4|\n\n\n:::\n:::\n\n\n\n::: {.cell}\n\n```{.r .cell-code}\nplot_precipitation_distribution(weather, \"en\")\n```\n\n::: {.cell-output-display}\n![](index_files/figure-html/unnamed-chunk-2-1.png){fig-alt='Histogram showing a large concentration of hourly precipitation observations at zero.' width=672}\n:::\n:::\n\n\n## Models\n\n- **Mean baseline:** establishes the minimum useful benchmark.\n- **Linear regression:** interpretable additive relationships.\n- **Ridge regression:** regularizes correlated weather predictors; its penalty is selected by cross-validation.\n- **Polynomial regression:** allows smooth curvature while preserving a transparent regression structure.\n\n## Final holdout performance\n\n\n::: {.cell}\n\n```{.r .cell-code}\nmodel_results$metrics |>\n  tidyr::pivot_wider(names_from = .metric, values_from = .estimate) |>\n  arrange(rmse) |>\n  knitr::kable(digits = 4)\n```\n\n::: {.cell-output-display}\n\n\n|model                 |    mae|   rmse|    rsq|\n|:---------------------|------:|------:|------:|\n|Polynomial regression | 0.0146| 0.0444| 0.0604|\n|Linear regression     | 0.0140| 0.0447| 0.0510|\n|Ridge regression      | 0.0132| 0.0447| 0.0498|\n|Mean baseline         | 0.0120| 0.0458| 0.0000|\n\n\n:::\n:::\n\n\nEvery metric above uses only the final time-ordered test set. RMSE emphasizes larger misses, MAE describes typical absolute error, and R² measures improvement relative to a constant mean under the same holdout.\n\n## Interpretation\n\nPrecipitation is zero-inflated and difficult to predict with a small set of contemporaneous measurements. A regression with lower error than the baseline is useful evidence, but operational forecasting would require lagged radar, cloud, and atmospheric variables.\n\n## Conclusion\n\nThe primary improvement is trustworthy evaluation. Model selection occurs before the final test period, and the notebook reports several complementary metrics instead of training error.\n\n",
+    "supporting": [
+      "index_files"
+    ],
+    "filters": [
+      "rmarkdown/pagebreak.lua"
+    ],
+    "includes": {},
+    "engineDependencies": {},
+    "preserve": {},
+    "postProcess": true
+  }
+}

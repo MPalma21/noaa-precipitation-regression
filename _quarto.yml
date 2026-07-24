@@ -1,0 +1,31 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "NOAA Precipitation Regression"
+  navbar:
+    left:
+      - href: index.qmd
+        text: English
+      - href: es/index.qmd
+        text: Español
+    right:
+      - icon: github
+        href: https://github.com/MPalma21/noaa-precipitation-regression
+  page-footer:
+    center: "Miguelangel Palma Rojas · Reproducible machine learning"
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    code-fold: true
+    code-tools: true
+    smooth-scroll: true
+
+execute:
+  freeze: auto
+  warning: false
+  message: false
+

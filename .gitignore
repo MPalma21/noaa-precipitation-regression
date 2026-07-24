@@ -1,0 +1,12 @@
+/.quarto/
+/_site/
+/.Rproj.user/
+/.Rhistory
+/.RData
+/*.tar.gz
+/noaa-weather-sample-data/
+/renv/library/
+/renv/staging/
+
+
+**/*.quarto_ipynb

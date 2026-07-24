@@ -1,0 +1,4 @@
+snapshot_date: 2026-07-23
+source: https://cf-courses-data.s3.us.cloud-object-storage.appdomain.cloud/ENn4iRKnW2szuR-zPKslwg/noaa-weather-sample-data-tar.gz
+station: John F. Kennedy International Airport
+trace_precipitation_rule: T converted to 0 inches
