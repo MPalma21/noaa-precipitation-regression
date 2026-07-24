@@ -373,12 +373,14 @@ holdout_metrics <- bind_rows(
 ) |>
   select(model, .metric, .estimate)
 
-holdout_metrics |>
+metrics_table <- holdout_metrics |>
   pivot_wider(
     names_from = .metric,
     values_from = .estimate
   ) |>
-  arrange(rmse) |>
+  arrange(rmse)
+
+metrics_table |>
   kable(digits = 4)
 ```
 
@@ -469,4 +471,10 @@ ggplot(
 
 ## Conclusión
 
-El código visible demuestra partición temporal, preprocesamiento sin fuga, validación cruzada, selección de hiperparámetros, predicción y evaluación final. Consulta la [versión en inglés](../index.qmd).
+- La regresión polinómica obtiene el menor RMSE de prueba (`r sprintf("%.4f", metrics_table$rmse[metrics_table$model == "Regresión polinómica"])`), una reducción de `r sprintf("%.1f", 100 * (metrics_table$rmse[metrics_table$model == "Línea base"] - metrics_table$rmse[metrics_table$model == "Regresión polinómica"]) / metrics_table$rmse[metrics_table$model == "Línea base"])`% frente a la línea base.
+- Su R² final es apenas `r sprintf("%.3f", metrics_table$rsq_trad[metrics_table$model == "Regresión polinómica"])`; por tanto, los predictores meteorológicos contemporáneos explican poca variación temporal de la precipitación.
+- La penalización ridge elegida mediante cinco folds es `r format(best_penalty$penalty[[1]], digits = 3, scientific = TRUE)`. Ridge y regresión lineal producen RMSE casi idénticos, señal de que la regularización aporta poco con solo cuatro predictores.
+- La línea base logra el menor MAE (`r sprintf("%.4f", metrics_table$mae[metrics_table$model == "Línea base"])`) aunque tiene el peor RMSE. Esta inversión es coherente con la inflación de ceros: predecir cerca de cero funciona en horas típicas, pero todos los modelos subestiman lluvias intensas poco frecuentes.
+- Una mejora operativa requeriría rezagos, radar, nubosidad y variables atmosféricas, o un modelo de dos etapas para ocurrencia y cantidad.
+
+Consulta la [versión en inglés](../index.qmd).

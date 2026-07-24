@@ -373,12 +373,14 @@ holdout_metrics <- bind_rows(
 ) |>
   select(model, .metric, .estimate)
 
-holdout_metrics |>
+metrics_table <- holdout_metrics |>
   pivot_wider(
     names_from = .metric,
     values_from = .estimate
   ) |>
-  arrange(rmse) |>
+  arrange(rmse)
+
+metrics_table |>
   kable(digits = 4)
 ```
 
@@ -469,4 +471,10 @@ ggplot(
 
 ## Conclusion
 
-The visible code demonstrates temporal splitting, leakage-safe preprocessing, cross-validation, hyperparameter selection, prediction, and final evaluation. See the [Spanish version](es/index.qmd).
+- Polynomial regression achieves the lowest holdout RMSE (`r sprintf("%.4f", metrics_table$rmse[metrics_table$model == "Polynomial regression"])`), a `r sprintf("%.1f", 100 * (metrics_table$rmse[metrics_table$model == "Mean baseline"] - metrics_table$rmse[metrics_table$model == "Polynomial regression"]) / metrics_table$rmse[metrics_table$model == "Mean baseline"])`% reduction relative to the mean baseline.
+- Its holdout R² is only `r sprintf("%.3f", metrics_table$rsq_trad[metrics_table$model == "Polynomial regression"])`, so the available contemporaneous predictors explain little of the temporal variation in precipitation.
+- The ridge penalty selected by five-fold cross-validation is `r format(best_penalty$penalty[[1]], digits = 3, scientific = TRUE)`. Ridge and linear regression produce nearly identical RMSE, indicating limited benefit from regularization with only four predictors.
+- The mean baseline has the lowest MAE (`r sprintf("%.4f", metrics_table$mae[metrics_table$model == "Mean baseline"])`) despite the worst RMSE. This metric reversal is consistent with zero inflation: predicting near zero performs well for typical hours, while all models underpredict uncommon heavy-rain events.
+- Operational improvement would require lagged precipitation, radar, cloud, and atmospheric predictors or a two-stage occurrence-and-amount model.
+
+See the [Spanish version](es/index.qmd).
