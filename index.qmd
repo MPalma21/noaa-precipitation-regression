@@ -96,6 +96,72 @@ ggplot(weather, aes(x = precipitation_in)) +
   theme(plot.title = element_text(face = "bold"))
 ```
 
+## Exploratory analysis
+
+The predictors operate on different scales. Faceted histograms reveal skewness, concentration, and potential measurement artifacts before modeling.
+
+```{r}
+#| label: predictor-distributions
+#| fig-alt: "Faceted histograms showing the distributions of humidity, temperature, station pressure, and wind speed."
+weather |>
+  select(
+    humidity,
+    temperature_f,
+    station_pressure,
+    wind_speed_mph
+  ) |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "predictor",
+    values_to = "value"
+  ) |>
+  ggplot(aes(x = value)) +
+  geom_histogram(
+    bins = 30,
+    fill = "#2A9D8F",
+    color = "white"
+  ) +
+  facet_wrap(
+    vars(predictor),
+    scales = "free",
+    ncol = 2
+  ) +
+  labs(
+    title = "Weather predictor distributions",
+    x = NULL,
+    y = "Observations"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+Daily aggregation makes wet periods visible without drawing thousands of hourly points.
+
+```{r}
+#| label: precipitation-time-series
+#| fig-alt: "Daily precipitation totals at JFK through the observed period."
+daily_precipitation <- weather |>
+  mutate(day = as.Date(date)) |>
+  group_by(day) |>
+  summarise(
+    precipitation_in = sum(precipitation_in, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(
+  daily_precipitation,
+  aes(x = day, y = precipitation_in)
+) +
+  geom_col(fill = "#457B9D", width = 1) +
+  labs(
+    title = "Daily precipitation varies in short, irregular episodes",
+    x = "Date",
+    y = "Daily precipitation (inches)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
 ## Create training, tuning, and test sets
 
 ```{r}
@@ -203,6 +269,39 @@ ridge_predictions <- bind_cols(
 )
 ```
 
+The tuning profile shows whether the selected penalty lies in a stable region or at the edge of the search grid.
+
+```{r}
+#| label: ridge-tuning-curve
+#| fig-alt: "Cross-validation RMSE across ridge penalty values."
+ridge_tuning <- ridge_results |>
+  collect_metrics() |>
+  filter(.metric == "rmse")
+
+ggplot(
+  ridge_tuning,
+  aes(x = penalty, y = mean)
+) +
+  geom_ribbon(
+    aes(
+      ymin = mean - std_err,
+      ymax = mean + std_err
+    ),
+    fill = "#A8DADC",
+    alpha = 0.6
+  ) +
+  geom_line(color = "#1D3557", linewidth = 0.9) +
+  geom_point(color = "#1D3557", size = 2) +
+  scale_x_log10() +
+  labs(
+    title = "Ridge penalty selected through cross-validation",
+    x = "Penalty (log scale)",
+    y = "Cross-validation RMSE"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
 ## Polynomial regression
 
 ```{r}
@@ -284,6 +383,89 @@ holdout_metrics |>
 ```
 
 RMSE emphasizes larger misses, MAE describes typical absolute error, and R² measures improvement relative to a constant mean on the same holdout.
+
+## Observed versus predicted
+
+```{r}
+#| label: observed-predicted
+#| fig-height: 7
+#| fig-alt: "Faceted observed-versus-predicted plots for wet hours across the four precipitation models."
+prediction_comparison <- bind_rows(
+  baseline_predictions |>
+    mutate(model = "Mean baseline"),
+  linear_predictions |>
+    mutate(model = "Linear regression"),
+  ridge_predictions |>
+    mutate(model = "Ridge regression"),
+  polynomial_predictions |>
+    mutate(model = "Polynomial regression")
+) |>
+  mutate(
+    model = factor(
+      model,
+      levels = c(
+        "Mean baseline",
+        "Linear regression",
+        "Ridge regression",
+        "Polynomial regression"
+      )
+    )
+  )
+
+wet_prediction_comparison <- prediction_comparison |>
+  filter(precipitation_in > 0)
+
+ggplot(
+  wet_prediction_comparison,
+  aes(x = precipitation_in, y = .pred)
+) +
+  geom_abline(
+    slope = 1,
+    intercept = 0,
+    color = "#E76F51",
+    linewidth = 0.8
+  ) +
+  geom_point(alpha = 0.35, color = "#2A9D8F") +
+  facet_wrap(
+    vars(model),
+    scales = "free_y",
+    ncol = 2
+  ) +
+  scale_x_sqrt() +
+  scale_y_sqrt() +
+  labs(
+    title = "Observed and predicted precipitation during wet holdout hours",
+    x = "Observed precipitation (inches)",
+    y = "Predicted precipitation (inches)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+## Residual comparison
+
+```{r}
+#| label: residual-comparison
+#| fig-alt: "Faceted residual plots for the four precipitation models."
+residual_comparison <- prediction_comparison |>
+  mutate(residual = precipitation_in - .pred)
+
+ggplot(
+  residual_comparison,
+  aes(x = .pred, y = residual)
+) +
+  geom_hline(yintercept = 0, color = "#555555") +
+  geom_point(alpha = 0.3, color = "#457B9D") +
+  geom_smooth(se = FALSE, color = "#E76F51") +
+  facet_wrap(vars(model), scales = "free_x", ncol = 2) +
+  labs(
+    title = "Residual structure reveals systematic underprediction",
+    x = "Predicted precipitation (inches)",
+    y = "Observed minus predicted"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
 
 ## Conclusion
 

@@ -96,6 +96,72 @@ ggplot(weather, aes(x = precipitation_in)) +
   theme(plot.title = element_text(face = "bold"))
 ```
 
+## Análisis exploratorio
+
+Los predictores tienen escalas diferentes. Los histogramas facetados permiten observar asimetrías, concentraciones y posibles artefactos de medición antes de modelar.
+
+```{r}
+#| label: predictor-distributions
+#| fig-alt: "Histogramas facetados de humedad, temperatura, presión y velocidad del viento."
+weather |>
+  select(
+    humidity,
+    temperature_f,
+    station_pressure,
+    wind_speed_mph
+  ) |>
+  pivot_longer(
+    cols = everything(),
+    names_to = "predictor",
+    values_to = "value"
+  ) |>
+  ggplot(aes(x = value)) +
+  geom_histogram(
+    bins = 30,
+    fill = "#2A9D8F",
+    color = "white"
+  ) +
+  facet_wrap(
+    vars(predictor),
+    scales = "free",
+    ncol = 2
+  ) +
+  labs(
+    title = "Distribuciones de los predictores meteorológicos",
+    x = NULL,
+    y = "Observaciones"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+La agregación diaria permite ver los periodos lluviosos sin dibujar miles de puntos horarios.
+
+```{r}
+#| label: precipitation-time-series
+#| fig-alt: "Totales diarios de precipitación en JFK durante el periodo observado."
+daily_precipitation <- weather |>
+  mutate(day = as.Date(date)) |>
+  group_by(day) |>
+  summarise(
+    precipitation_in = sum(precipitation_in, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(
+  daily_precipitation,
+  aes(x = day, y = precipitation_in)
+) +
+  geom_col(fill = "#457B9D", width = 1) +
+  labs(
+    title = "La precipitación diaria ocurre en episodios breves e irregulares",
+    x = "Fecha",
+    y = "Precipitación diaria (pulgadas)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
 ## Crear conjuntos de entrenamiento, ajuste y prueba
 
 ```{r}
@@ -203,6 +269,39 @@ ridge_predictions <- bind_cols(
 )
 ```
 
+El perfil de ajuste muestra si la penalización seleccionada está en una región estable o en el límite de la cuadrícula.
+
+```{r}
+#| label: ridge-tuning-curve
+#| fig-alt: "RMSE de validación cruzada para diferentes penalizaciones ridge."
+ridge_tuning <- ridge_results |>
+  collect_metrics() |>
+  filter(.metric == "rmse")
+
+ggplot(
+  ridge_tuning,
+  aes(x = penalty, y = mean)
+) +
+  geom_ribbon(
+    aes(
+      ymin = mean - std_err,
+      ymax = mean + std_err
+    ),
+    fill = "#A8DADC",
+    alpha = 0.6
+  ) +
+  geom_line(color = "#1D3557", linewidth = 0.9) +
+  geom_point(color = "#1D3557", size = 2) +
+  scale_x_log10() +
+  labs(
+    title = "Penalización ridge seleccionada con validación cruzada",
+    x = "Penalización (escala logarítmica)",
+    y = "RMSE de validación cruzada"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
 ## Regresión polinómica
 
 ```{r}
@@ -284,6 +383,89 @@ holdout_metrics |>
 ```
 
 RMSE enfatiza errores grandes, MAE describe el error absoluto típico y R² mide la mejora frente a una media constante en la misma prueba.
+
+## Observado frente a predicho
+
+```{r}
+#| label: observed-predicted
+#| fig-height: 7
+#| fig-alt: "Gráficos facetados de valores observados y predichos durante horas lluviosas para los cuatro modelos."
+prediction_comparison <- bind_rows(
+  baseline_predictions |>
+    mutate(model = "Línea base"),
+  linear_predictions |>
+    mutate(model = "Regresión lineal"),
+  ridge_predictions |>
+    mutate(model = "Regresión ridge"),
+  polynomial_predictions |>
+    mutate(model = "Regresión polinómica")
+) |>
+  mutate(
+    model = factor(
+      model,
+      levels = c(
+        "Línea base",
+        "Regresión lineal",
+        "Regresión ridge",
+        "Regresión polinómica"
+      )
+    )
+  )
+
+wet_prediction_comparison <- prediction_comparison |>
+  filter(precipitation_in > 0)
+
+ggplot(
+  wet_prediction_comparison,
+  aes(x = precipitation_in, y = .pred)
+) +
+  geom_abline(
+    slope = 1,
+    intercept = 0,
+    color = "#E76F51",
+    linewidth = 0.8
+  ) +
+  geom_point(alpha = 0.35, color = "#2A9D8F") +
+  facet_wrap(
+    vars(model),
+    scales = "free_y",
+    ncol = 2
+  ) +
+  scale_x_sqrt() +
+  scale_y_sqrt() +
+  labs(
+    title = "Precipitación observada y predicha durante horas lluviosas",
+    x = "Precipitación observada (pulgadas)",
+    y = "Precipitación predicha (pulgadas)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+## Comparación de residuos
+
+```{r}
+#| label: residual-comparison
+#| fig-alt: "Gráficos facetados de residuos para los cuatro modelos de precipitación."
+residual_comparison <- prediction_comparison |>
+  mutate(residual = precipitation_in - .pred)
+
+ggplot(
+  residual_comparison,
+  aes(x = .pred, y = residual)
+) +
+  geom_hline(yintercept = 0, color = "#555555") +
+  geom_point(alpha = 0.3, color = "#457B9D") +
+  geom_smooth(se = FALSE, color = "#E76F51") +
+  facet_wrap(vars(model), scales = "free_x", ncol = 2) +
+  labs(
+    title = "Los residuos revelan subestimación sistemática",
+    x = "Precipitación predicha (pulgadas)",
+    y = "Observado menos predicho"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
 
 ## Conclusión
 
