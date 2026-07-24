@@ -6,60 +6,285 @@ date: last-modified
 lang: en
 ---
 
-```{r}
-#| label: setup
-#| include: false
-source(here::here("R", "analysis.R"))
-weather <- read_weather_snapshot()
-model_results <- fit_weather_models(weather)
-```
-
 ## Objective
 
-This notebook predicts hourly precipitation from humidity, temperature, station pressure, and wind speed. It corrects the original evaluation by sorting observations by time, reserving the latest 20% as a final test set, and using cross-validation only inside the earlier training period.
+This notebook exposes the complete modeling workflow. It sorts observations by time, reserves the latest 20% for final evaluation, tunes ridge regression only on the earlier period, and compares every model on unseen data.
 
-## Data preparation
-
-The snapshot contains `r nrow(weather)` validated observations. NOAA trace values (`T`) are documented and converted to zero inches; malformed numeric suffixes are removed; records without a timestamp or outcome are excluded.
+## Load packages
 
 ```{r}
+#| label: packages
+#| message: false
+#| warning: false
+library(dplyr)
+library(ggplot2)
+library(here)
+library(knitr)
+library(readr)
+library(tidymodels)
+library(tidyr)
+```
+
+## Read and validate weather data
+
+```{r}
+#| label: read-data
+weather <- read_csv(
+  here("data", "jfk_weather_snapshot.csv"),
+  show_col_types = FALSE,
+  col_types = cols(date = col_datetime())
+) |>
+  arrange(date)
+
+required_columns <- c(
+  "date",
+  "humidity",
+  "temperature_f",
+  "station_pressure",
+  "wind_speed_mph",
+  "precipitation_in"
+)
+
+missing_columns <- setdiff(required_columns, names(weather))
+
+if (length(missing_columns) > 0) {
+  stop(
+    "Weather data is missing columns: ",
+    paste(missing_columns, collapse = ", ")
+  )
+}
+
+stopifnot(
+  anyDuplicated(weather$date) == 0,
+  !any(weather$precipitation_in < 0, na.rm = TRUE)
+)
+
 weather |>
   summarise(
+    observations = n(),
     first_observation = min(date),
     last_observation = max(date),
-    missing_predictor_cells = sum(is.na(across(where(is.numeric))))
+    missing_predictor_cells = sum(
+      is.na(across(where(is.numeric)))
+    )
   ) |>
-  knitr::kable()
+  kable()
 ```
 
 ```{r}
+#| label: precipitation-distribution
 #| fig-alt: "Histogram showing a large concentration of hourly precipitation observations at zero."
-plot_precipitation_distribution(weather, "en")
+ggplot(weather, aes(x = precipitation_in)) +
+  geom_histogram(
+    binwidth = 0.01,
+    boundary = 0,
+    fill = "#2A9D8F",
+    color = "white"
+  ) +
+  coord_cartesian(
+    xlim = c(
+      0,
+      quantile(weather$precipitation_in, 0.995, na.rm = TRUE)
+    )
+  ) +
+  labs(
+    title = "Hourly precipitation is strongly zero-inflated",
+    x = "Precipitation (inches)",
+    y = "Observations"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
 ```
 
-## Models
+## Create training, tuning, and test sets
 
-- **Mean baseline:** establishes the minimum useful benchmark.
-- **Linear regression:** interpretable additive relationships.
-- **Ridge regression:** regularizes correlated weather predictors; its penalty is selected by cross-validation.
-- **Polynomial regression:** allows smooth curvature while preserving a transparent regression structure.
+```{r}
+#| label: data-split
+set.seed(2026)
+
+weather_split <- initial_time_split(weather, prop = 0.8)
+training_data <- training(weather_split)
+testing_data <- testing(weather_split)
+resamples <- vfold_cv(training_data, v = 5)
+
+tibble(
+  partition = c("Training and tuning", "Final test"),
+  observations = c(nrow(training_data), nrow(testing_data)),
+  first_date = c(min(training_data$date), min(testing_data$date)),
+  last_date = c(max(training_data$date), max(testing_data$date))
+) |>
+  kable()
+```
+
+## Mean baseline
+
+```{r}
+#| label: baseline-model
+baseline_predictions <- testing_data |>
+  transmute(
+    precipitation_in,
+    .pred = mean(training_data$precipitation_in)
+  )
+```
+
+## Shared preprocessing recipe
+
+Median imputation and normalization are estimated inside each workflow, so the final test period cannot influence preprocessing.
+
+```{r}
+#| label: preprocessing-recipe
+weather_recipe <- recipe(
+  precipitation_in ~
+    humidity +
+    temperature_f +
+    station_pressure +
+    wind_speed_mph,
+  data = training_data
+) |>
+  step_impute_median(all_numeric_predictors()) |>
+  step_normalize(all_numeric_predictors())
+```
+
+## Linear regression
+
+```{r}
+#| label: linear-model
+linear_workflow <- workflow() |>
+  add_recipe(weather_recipe) |>
+  add_model(
+    linear_reg() |>
+      set_engine("lm")
+  )
+
+linear_fit <- fit(linear_workflow, data = training_data)
+
+linear_predictions <- bind_cols(
+  testing_data |> select(precipitation_in),
+  predict(linear_fit, new_data = testing_data)
+)
+```
+
+## Ridge regression with cross-validation
+
+```{r}
+#| label: ridge-model
+ridge_workflow <- workflow() |>
+  add_recipe(weather_recipe) |>
+  add_model(
+    linear_reg(
+      penalty = tune(),
+      mixture = 0
+    ) |>
+      set_engine("glmnet")
+  )
+
+ridge_grid <- grid_regular(
+  penalty(range = c(-5, 0)),
+  levels = 8
+)
+
+ridge_results <- tune_grid(
+  ridge_workflow,
+  resamples = resamples,
+  grid = ridge_grid,
+  metrics = metric_set(rmse, mae, rsq_trad)
+)
+
+best_penalty <- select_best(ridge_results, metric = "rmse")
+best_penalty |> kable(digits = 5)
+
+ridge_fit <- ridge_workflow |>
+  finalize_workflow(best_penalty) |>
+  fit(data = training_data)
+
+ridge_predictions <- bind_cols(
+  testing_data |> select(precipitation_in),
+  predict(ridge_fit, new_data = testing_data)
+)
+```
+
+## Polynomial regression
+
+```{r}
+#| label: polynomial-model
+polynomial_recipe <- weather_recipe |>
+  step_poly(
+    temperature_f,
+    humidity,
+    station_pressure,
+    wind_speed_mph,
+    degree = 2
+  )
+
+polynomial_workflow <- workflow() |>
+  add_recipe(polynomial_recipe) |>
+  add_model(
+    linear_reg() |>
+      set_engine("lm")
+  )
+
+polynomial_fit <- fit(
+  polynomial_workflow,
+  data = training_data
+)
+
+polynomial_predictions <- bind_cols(
+  testing_data |> select(precipitation_in),
+  predict(polynomial_fit, new_data = testing_data)
+)
+```
 
 ## Final holdout performance
 
 ```{r}
-model_results$metrics |>
-  tidyr::pivot_wider(names_from = .metric, values_from = .estimate) |>
+#| label: holdout-metrics
+baseline_metrics <- bind_rows(
+  rmse(baseline_predictions, precipitation_in, .pred),
+  mae(baseline_predictions, precipitation_in, .pred),
+  rsq_trad(baseline_predictions, precipitation_in, .pred)
+) |>
+  mutate(model = "Mean baseline")
+
+linear_metrics <- bind_rows(
+  rmse(linear_predictions, precipitation_in, .pred),
+  mae(linear_predictions, precipitation_in, .pred),
+  rsq_trad(linear_predictions, precipitation_in, .pred)
+) |>
+  mutate(model = "Linear regression")
+
+ridge_metrics <- bind_rows(
+  rmse(ridge_predictions, precipitation_in, .pred),
+  mae(ridge_predictions, precipitation_in, .pred),
+  rsq_trad(ridge_predictions, precipitation_in, .pred)
+) |>
+  mutate(model = "Ridge regression")
+
+polynomial_metrics <- bind_rows(
+  rmse(polynomial_predictions, precipitation_in, .pred),
+  mae(polynomial_predictions, precipitation_in, .pred),
+  rsq_trad(polynomial_predictions, precipitation_in, .pred)
+) |>
+  mutate(model = "Polynomial regression")
+
+holdout_metrics <- bind_rows(
+  baseline_metrics,
+  linear_metrics,
+  ridge_metrics,
+  polynomial_metrics
+) |>
+  select(model, .metric, .estimate)
+
+holdout_metrics |>
+  pivot_wider(
+    names_from = .metric,
+    values_from = .estimate
+  ) |>
   arrange(rmse) |>
-  knitr::kable(digits = 4)
+  kable(digits = 4)
 ```
 
-Every metric above uses only the final time-ordered test set. RMSE emphasizes larger misses, MAE describes typical absolute error, and R² measures improvement relative to a constant mean under the same holdout.
-
-## Interpretation
-
-Precipitation is zero-inflated and difficult to predict with a small set of contemporaneous measurements. A regression with lower error than the baseline is useful evidence, but operational forecasting would require lagged radar, cloud, and atmospheric variables.
+RMSE emphasizes larger misses, MAE describes typical absolute error, and R² measures improvement relative to a constant mean on the same holdout.
 
 ## Conclusion
 
-The primary improvement is trustworthy evaluation. Model selection occurs before the final test period, and the notebook reports several complementary metrics instead of training error.
-
+The visible code demonstrates temporal splitting, leakage-safe preprocessing, cross-validation, hyperparameter selection, prediction, and final evaluation. See the [Spanish version](es/index.qmd).
