@@ -1,6 +1,6 @@
 ---
-title: "Predicting Hourly Precipitation at JFK Airport"
-subtitle: "Regression comparison with temporal holdout evaluation"
+title: "Forecasting Hourly Precipitation at JFK Airport"
+subtitle: "A calibrated two-stage model with temporal validation"
 author: "Miguelangel Palma Rojas"
 date: last-modified
 lang: en
@@ -8,24 +8,24 @@ lang: en
 
 ## Objective
 
-This notebook exposes the complete modeling workflow. It sorts observations by time, reserves the latest 20% for final evaluation, tunes ridge regression only on the earlier period, and compares every model on unseen data.
+Hourly precipitation is a zero-inflated target: most observations are dry, while a small number of storms account for the largest errors. This notebook therefore answers two questions separately: **will it rain?** and, conditional on rain, **how much?**
 
-## Load packages
+Every transformation, model, and evaluation step is visible below. The forecast uses contemporaneous weather readings plus the previous precipitation observation; it never uses future information.
+
+## Packages
 
 ```{r}
 #| label: packages
 #| message: false
 #| warning: false
-library(dplyr)
-library(ggplot2)
+library(tidyverse)
+library(tidymodels)
 library(here)
 library(knitr)
-library(readr)
-library(tidymodels)
-library(tidyr)
+stopifnot(requireNamespace("xgboost", quietly = TRUE))
 ```
 
-## Read and validate weather data
+## Read the reproducible snapshot
 
 ```{r}
 #| label: read-data
@@ -35,446 +35,528 @@ weather <- read_csv(
   col_types = cols(date = col_datetime())
 ) |>
   arrange(date)
+```
 
+```{r}
+#| label: validate-data
 required_columns <- c(
-  "date",
-  "humidity",
-  "temperature_f",
-  "station_pressure",
-  "wind_speed_mph",
-  "precipitation_in"
+  "date", "humidity", "temperature_f", "station_pressure",
+  "wind_speed_mph", "precipitation_in"
 )
 
-missing_columns <- setdiff(required_columns, names(weather))
-
-if (length(missing_columns) > 0) {
-  stop(
-    "Weather data is missing columns: ",
-    paste(missing_columns, collapse = ", ")
-  )
-}
-
 stopifnot(
+  all(required_columns %in% names(weather)),
   anyDuplicated(weather$date) == 0,
   !any(weather$precipitation_in < 0, na.rm = TRUE)
 )
+```
 
+## Engineer available-at-prediction-time features
+
+```{r}
+#| label: feature-engineering
+weather <- weather |>
+  mutate(
+    rain = factor(if_else(precipitation_in > 0, "rain", "dry"),
+      levels = c("rain", "dry")),
+    precipitation_lag1 = lag(precipitation_in, default = 0),
+    rain_lag1 = lag(as.integer(precipitation_in > 0), default = 0),
+    gap_hours = as.numeric(difftime(date, lag(date), units = "hours")),
+    gap_hours = replace_na(gap_hours, median(gap_hours, na.rm = TRUE)),
+    month_sin = sin(2 * pi * month(date) / 12),
+    month_cos = cos(2 * pi * month(date) / 12),
+    hour_sin = sin(2 * pi * hour(date) / 24),
+    hour_cos = cos(2 * pi * hour(date) / 24)
+  )
+```
+
+```{r}
+#| label: data-summary
 weather |>
   summarise(
     observations = n(),
     first_observation = min(date),
     last_observation = max(date),
-    missing_predictor_cells = sum(
-      is.na(across(where(is.numeric)))
-    )
+    wet_hours = sum(rain == "rain"),
+    wet_share = mean(rain == "rain")
   ) |>
-  kable()
+  kable(digits = 3)
 ```
+
+## Explore the target
 
 ```{r}
 #| label: precipitation-distribution
-#| fig-alt: "Histogram showing a large concentration of hourly precipitation observations at zero."
+#| fig-alt: "Histogram showing that most hourly precipitation observations are zero."
 ggplot(weather, aes(x = precipitation_in)) +
-  geom_histogram(
-    binwidth = 0.01,
-    boundary = 0,
-    fill = "#2A9D8F",
-    color = "white"
-  ) +
-  coord_cartesian(
-    xlim = c(
-      0,
-      quantile(weather$precipitation_in, 0.995, na.rm = TRUE)
-    )
-  ) +
+  geom_histogram(binwidth = 0.01, boundary = 0,
+    fill = "#2A9D8F", color = "white") +
+  coord_cartesian(xlim = c(0, quantile(weather$precipitation_in, 0.995))) +
   labs(
     title = "Hourly precipitation is strongly zero-inflated",
-    x = "Precipitation (inches)",
-    y = "Observations"
+    x = "Precipitation (inches)", y = "Observations"
   ) +
   theme_minimal(base_size = 12) +
   theme(plot.title = element_text(face = "bold"))
 ```
 
-## Exploratory analysis
-
-The predictors operate on different scales. Faceted histograms reveal skewness, concentration, and potential measurement artifacts before modeling.
-
 ```{r}
-#| label: predictor-distributions
-#| fig-alt: "Faceted histograms showing the distributions of humidity, temperature, station pressure, and wind speed."
+#| label: daily-series
+#| fig-alt: "Daily precipitation totals at JFK over time."
 weather |>
-  select(
-    humidity,
-    temperature_f,
-    station_pressure,
-    wind_speed_mph
-  ) |>
-  pivot_longer(
-    cols = everything(),
-    names_to = "predictor",
-    values_to = "value"
-  ) |>
-  ggplot(aes(x = value)) +
-  geom_histogram(
-    bins = 30,
-    fill = "#2A9D8F",
-    color = "white"
-  ) +
-  facet_wrap(
-    vars(predictor),
-    scales = "free",
-    ncol = 2
-  ) +
-  labs(
-    title = "Weather predictor distributions",
-    x = NULL,
-    y = "Observations"
-  ) +
-  theme_minimal(base_size = 12) +
-  theme(plot.title = element_text(face = "bold"))
-```
-
-Daily aggregation makes wet periods visible without drawing thousands of hourly points.
-
-```{r}
-#| label: precipitation-time-series
-#| fig-alt: "Daily precipitation totals at JFK through the observed period."
-daily_precipitation <- weather |>
   mutate(day = as.Date(date)) |>
   group_by(day) |>
-  summarise(
-    precipitation_in = sum(precipitation_in, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-ggplot(
-  daily_precipitation,
-  aes(x = day, y = precipitation_in)
-) +
+  summarise(precipitation_in = sum(precipitation_in), .groups = "drop") |>
+  ggplot(aes(x = day, y = precipitation_in)) +
   geom_col(fill = "#457B9D", width = 1) +
   labs(
-    title = "Daily precipitation varies in short, irregular episodes",
-    x = "Date",
-    y = "Daily precipitation (inches)"
+    title = "Rain arrives in short, irregular episodes",
+    x = "Date", y = "Daily precipitation (inches)"
   ) +
   theme_minimal(base_size = 12) +
   theme(plot.title = element_text(face = "bold"))
 ```
 
-## Create training, tuning, and test sets
+## Preserve the temporal order
+
+The earliest 70% is used for model selection, the next 10% for calibration, and the latest 20% only once for final evaluation.
 
 ```{r}
-#| label: data-split
+#| label: temporal-splits
 set.seed(2026)
+final_split <- initial_time_split(weather, prop = 0.8)
+development_data <- training(final_split)
+testing_data <- testing(final_split)
 
-weather_split <- initial_time_split(weather, prop = 0.8)
-training_data <- training(weather_split)
-testing_data <- testing(weather_split)
-resamples <- vfold_cv(training_data, v = 5)
+validation_split <- initial_time_split(development_data, prop = 0.875)
+modeling_data <- training(validation_split)
+validation_data <- testing(validation_split)
+```
 
-tibble(
-  partition = c("Training and tuning", "Final test"),
-  observations = c(nrow(training_data), nrow(testing_data)),
-  first_date = c(min(training_data$date), min(testing_data$date)),
-  last_date = c(max(training_data$date), max(testing_data$date))
+```{r}
+#| label: partition-table
+bind_rows(
+  modeling_data |> summarise(partition = "Modeling", n = n(), first = min(date), last = max(date)),
+  validation_data |> summarise(partition = "Calibration", n = n(), first = min(date), last = max(date)),
+  testing_data |> summarise(partition = "Final test", n = n(), first = min(date), last = max(date))
 ) |>
   kable()
 ```
 
-## Mean baseline
+```{r}
+#| label: temporal-resamples
+class_resamples <- rolling_origin(
+  modeling_data,
+  initial = 1500,
+  assess = 325,
+  cumulative = TRUE,
+  skip = 324
+)
+
+class_resamples
+```
+
+## Baselines
 
 ```{r}
-#| label: baseline-model
+#| label: baselines
+baseline_mean <- mean(development_data$precipitation_in)
+
 baseline_predictions <- testing_data |>
   transmute(
-    precipitation_in,
-    .pred = mean(training_data$precipitation_in)
+    date, precipitation_in,
+    `Dry baseline` = 0,
+    `Historical mean` = baseline_mean
   )
 ```
 
-## Shared preprocessing recipe
-
-Median imputation and normalization are estimated inside each workflow, so the final test period cannot influence preprocessing.
+### Previous single-stage benchmark
 
 ```{r}
-#| label: preprocessing-recipe
-weather_recipe <- recipe(
-  precipitation_in ~
-    humidity +
-    temperature_f +
-    station_pressure +
-    wind_speed_mph,
-  data = training_data
+#| label: polynomial-recipe
+polynomial_recipe <- recipe(
+  precipitation_in ~ humidity + temperature_f +
+    station_pressure + wind_speed_mph,
+  data = development_data
 ) |>
   step_impute_median(all_numeric_predictors()) |>
-  step_normalize(all_numeric_predictors())
+  step_normalize(all_numeric_predictors()) |>
+  step_poly(all_numeric_predictors(), degree = 2)
 ```
-
-## Linear regression
-
-```{r}
-#| label: linear-model
-linear_workflow <- workflow() |>
-  add_recipe(weather_recipe) |>
-  add_model(
-    linear_reg() |>
-      set_engine("lm")
-  )
-
-linear_fit <- fit(linear_workflow, data = training_data)
-
-linear_predictions <- bind_cols(
-  testing_data |> select(precipitation_in),
-  predict(linear_fit, new_data = testing_data)
-)
-```
-
-## Ridge regression with cross-validation
-
-```{r}
-#| label: ridge-model
-ridge_workflow <- workflow() |>
-  add_recipe(weather_recipe) |>
-  add_model(
-    linear_reg(
-      penalty = tune(),
-      mixture = 0
-    ) |>
-      set_engine("glmnet")
-  )
-
-ridge_grid <- grid_regular(
-  penalty(range = c(-5, 0)),
-  levels = 8
-)
-
-ridge_results <- tune_grid(
-  ridge_workflow,
-  resamples = resamples,
-  grid = ridge_grid,
-  metrics = metric_set(rmse, mae, rsq_trad)
-)
-
-best_penalty <- select_best(ridge_results, metric = "rmse")
-best_penalty |> kable(digits = 5)
-
-ridge_fit <- ridge_workflow |>
-  finalize_workflow(best_penalty) |>
-  fit(data = training_data)
-
-ridge_predictions <- bind_cols(
-  testing_data |> select(precipitation_in),
-  predict(ridge_fit, new_data = testing_data)
-)
-```
-
-The tuning profile shows whether the selected penalty lies in a stable region or at the edge of the search grid.
-
-```{r}
-#| label: ridge-tuning-curve
-#| fig-alt: "Cross-validation RMSE across ridge penalty values."
-ridge_tuning <- ridge_results |>
-  collect_metrics() |>
-  filter(.metric == "rmse")
-
-ggplot(
-  ridge_tuning,
-  aes(x = penalty, y = mean)
-) +
-  geom_ribbon(
-    aes(
-      ymin = mean - std_err,
-      ymax = mean + std_err
-    ),
-    fill = "#A8DADC",
-    alpha = 0.6
-  ) +
-  geom_line(color = "#1D3557", linewidth = 0.9) +
-  geom_point(color = "#1D3557", size = 2) +
-  scale_x_log10() +
-  labs(
-    title = "Ridge penalty selected through cross-validation",
-    x = "Penalty (log scale)",
-    y = "Cross-validation RMSE"
-  ) +
-  theme_minimal(base_size = 12) +
-  theme(plot.title = element_text(face = "bold"))
-```
-
-## Polynomial regression
 
 ```{r}
 #| label: polynomial-model
-polynomial_recipe <- weather_recipe |>
-  step_poly(
-    temperature_f,
-    humidity,
-    station_pressure,
-    wind_speed_mph,
-    degree = 2
-  )
-
-polynomial_workflow <- workflow() |>
+polynomial_fit <- workflow() |>
   add_recipe(polynomial_recipe) |>
-  add_model(
-    linear_reg() |>
-      set_engine("lm")
+  add_model(linear_reg() |> set_engine("lm")) |>
+  fit(data = development_data)
+
+polynomial_predictions <- predict(polynomial_fit, testing_data) |>
+  pull(.pred)
+```
+
+## Stage 1: rain occurrence
+
+### Classification recipe
+
+```{r}
+#| label: occurrence-recipe
+occurrence_recipe <- recipe(
+  rain ~ humidity + temperature_f + station_pressure + wind_speed_mph +
+    precipitation_lag1 + rain_lag1 + gap_hours + month_sin + month_cos +
+    hour_sin + hour_cos,
+  data = modeling_data
+) |>
+  step_impute_median(all_numeric_predictors())
+```
+
+### Classification model
+
+```{r}
+#| label: occurrence-model
+occurrence_spec <- boost_tree(
+  trees = 600,
+  tree_depth = tune(),
+  min_n = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune(),
+  sample_size = tune(),
+  mtry = tune()
+) |>
+  set_mode("classification") |>
+  set_engine("xgboost")
+```
+
+### Classification grid
+
+```{r}
+#| label: occurrence-grid
+predictor_names <- c(
+  "humidity", "temperature_f", "station_pressure", "wind_speed_mph",
+  "precipitation_lag1", "rain_lag1", "gap_hours", "month_sin",
+  "month_cos", "hour_sin", "hour_cos"
+)
+
+occurrence_grid <- grid_space_filling(
+  tree_depth(c(2L, 7L)), min_n(c(5L, 35L)), learn_rate(c(-3, -0.7)),
+  loss_reduction(), sample_prop(c(0.65, 1)),
+  finalize(mtry(), modeling_data |> select(all_of(predictor_names))),
+  size = 12
+)
+```
+
+### Temporal tuning
+
+```{r}
+#| label: occurrence-tuning
+occurrence_results <- workflow() |>
+  add_recipe(occurrence_recipe) |>
+  add_model(occurrence_spec) |>
+  tune_grid(
+    resamples = class_resamples,
+    grid = occurrence_grid,
+    metrics = metric_set(pr_auc, roc_auc, mn_log_loss)
   )
 
-polynomial_fit <- fit(
-  polynomial_workflow,
-  data = training_data
+best_occurrence <- select_best(occurrence_results, metric = "pr_auc")
+best_occurrence |> kable(digits = 4)
+```
+
+### Fit the selected classifier
+
+```{r}
+#| label: occurrence-fit
+occurrence_workflow <- workflow() |>
+  add_recipe(occurrence_recipe) |>
+  add_model(occurrence_spec) |>
+  finalize_workflow(best_occurrence)
+
+occurrence_fit <- occurrence_workflow |>
+  fit(data = modeling_data)
+```
+
+## Stage 2: precipitation amount
+
+The amount model sees only wet observations. This prevents thousands of dry hours from overwhelming the storm-size signal.
+
+```{r}
+#| label: wet-training-data
+wet_modeling_data <- modeling_data |>
+  filter(rain == "rain")
+
+amount_resamples <- rolling_origin(
+  wet_modeling_data,
+  initial = 140,
+  assess = 40,
+  cumulative = TRUE,
+  skip = 39
+)
+```
+
+### Amount recipe
+
+```{r}
+#| label: amount-recipe
+amount_recipe <- recipe(
+  precipitation_in ~ humidity + temperature_f + station_pressure +
+    wind_speed_mph + precipitation_lag1 + rain_lag1 + gap_hours +
+    month_sin + month_cos + hour_sin + hour_cos,
+  data = wet_modeling_data
+) |>
+  step_impute_median(all_numeric_predictors())
+```
+
+### Amount model
+
+```{r}
+#| label: amount-model
+amount_spec <- boost_tree(
+  trees = 600,
+  tree_depth = tune(),
+  min_n = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune(),
+  sample_size = tune(),
+  mtry = tune()
+) |>
+  set_mode("regression") |>
+  set_engine("xgboost")
+```
+
+### Amount grid and tuning
+
+```{r}
+#| label: amount-grid
+amount_grid <- grid_space_filling(
+  tree_depth(c(2L, 6L)), min_n(c(3L, 25L)), learn_rate(c(-3, -0.7)),
+  loss_reduction(), sample_prop(c(0.65, 1)),
+  finalize(mtry(), wet_modeling_data |> select(all_of(predictor_names))),
+  size = 12
+)
+```
+
+```{r}
+#| label: amount-tuning
+amount_results <- workflow() |>
+  add_recipe(amount_recipe) |>
+  add_model(amount_spec) |>
+  tune_grid(
+    resamples = amount_resamples,
+    grid = amount_grid,
+    metrics = metric_set(rmse, mae)
+  )
+
+best_amount <- select_best(amount_results, metric = "rmse")
+best_amount |> kable(digits = 4)
+```
+
+### Fit the selected amount model
+
+```{r}
+#| label: amount-fit
+amount_workflow <- workflow() |>
+  add_recipe(amount_recipe) |>
+  add_model(amount_spec) |>
+  finalize_workflow(best_amount)
+
+amount_fit <- amount_workflow |>
+  fit(data = wet_modeling_data)
+```
+
+## Calibrate without touching the final test
+
+```{r}
+#| label: validation-predictions
+validation_predictions <- validation_data |>
+  select(date, rain, precipitation_in) |>
+  bind_cols(predict(occurrence_fit, validation_data, type = "prob")) |>
+  bind_cols(predict(amount_fit, validation_data)) |>
+  rename(amount_raw = .pred) |>
+  mutate(
+    amount_raw = pmax(amount_raw, 0),
+    logit_probability = qlogis(pmin(pmax(.pred_rain, 0.001), 0.999))
+  )
+```
+
+```{r}
+#| label: probability-calibration
+probability_calibration <- glm(
+  I(rain == "rain") ~ logit_probability,
+  data = validation_predictions,
+  family = binomial()
 )
 
-polynomial_predictions <- bind_cols(
-  testing_data |> select(precipitation_in),
-  predict(polynomial_fit, new_data = testing_data)
-)
+validation_predictions <- validation_predictions |>
+  mutate(rain_probability = predict(
+    probability_calibration, newdata = validation_predictions,
+    type = "response"
+  ))
+```
+
+```{r}
+#| label: amount-calibration
+amount_scale <- validation_predictions |>
+  filter(rain == "rain") |>
+  summarise(scale = sum(precipitation_in * amount_raw) / sum(amount_raw^2)) |>
+  pull(scale)
+
+amount_scale
+```
+
+```{r}
+#| label: threshold-selection
+threshold_results <- crossing(
+  threshold = seq(0.05, 0.60, by = 0.01),
+  validation_predictions
+) |>
+  mutate(.pred = if_else(
+    rain_probability >= threshold, amount_raw * amount_scale, 0
+  )) |>
+  group_by(threshold) |>
+  summarise(rmse = sqrt(mean((precipitation_in - .pred)^2)), .groups = "drop")
+
+best_threshold <- threshold_results |>
+  slice_min(rmse, n = 1, with_ties = FALSE) |>
+  pull(threshold)
+```
+
+## Refit on all development data
+
+```{r}
+#| label: final-fits
+final_occurrence_fit <- occurrence_workflow |>
+  fit(data = development_data)
+
+final_amount_fit <- amount_workflow |>
+  fit(data = development_data |> filter(rain == "rain"))
+```
+
+```{r}
+#| label: holdout-predictions
+holdout_predictions <- testing_data |>
+  select(date, rain, precipitation_in) |>
+  bind_cols(predict(final_occurrence_fit, testing_data, type = "prob")) |>
+  bind_cols(predict(final_amount_fit, testing_data)) |>
+  rename(amount_raw = .pred) |>
+  mutate(
+    amount_raw = pmax(amount_raw, 0),
+    logit_probability = qlogis(pmin(pmax(.pred_rain, 0.001), 0.999)),
+    rain_probability = predict(probability_calibration,
+      newdata = pick(everything()), type = "response"),
+    amount = amount_raw * amount_scale
+  )
+```
+
+```{r}
+#| label: combined-predictions
+holdout_predictions <- holdout_predictions |>
+  mutate(
+    `Hurdle model` = if_else(
+      rain_probability >= best_threshold, amount, 0
+    ),
+    `Expected precipitation` = rain_probability * amount,
+    `Single-stage polynomial` = polynomial_predictions,
+    `Dry baseline` = 0,
+    `Historical mean` = baseline_mean
+  )
 ```
 
 ## Final holdout performance
 
 ```{r}
-#| label: holdout-metrics
-baseline_metrics <- bind_rows(
-  rmse(baseline_predictions, precipitation_in, .pred),
-  mae(baseline_predictions, precipitation_in, .pred),
-  rsq_trad(baseline_predictions, precipitation_in, .pred)
-) |>
-  mutate(model = "Mean baseline")
-
-linear_metrics <- bind_rows(
-  rmse(linear_predictions, precipitation_in, .pred),
-  mae(linear_predictions, precipitation_in, .pred),
-  rsq_trad(linear_predictions, precipitation_in, .pred)
-) |>
-  mutate(model = "Linear regression")
-
-ridge_metrics <- bind_rows(
-  rmse(ridge_predictions, precipitation_in, .pred),
-  mae(ridge_predictions, precipitation_in, .pred),
-  rsq_trad(ridge_predictions, precipitation_in, .pred)
-) |>
-  mutate(model = "Ridge regression")
-
-polynomial_metrics <- bind_rows(
-  rmse(polynomial_predictions, precipitation_in, .pred),
-  mae(polynomial_predictions, precipitation_in, .pred),
-  rsq_trad(polynomial_predictions, precipitation_in, .pred)
-) |>
-  mutate(model = "Polynomial regression")
-
-holdout_metrics <- bind_rows(
-  baseline_metrics,
-  linear_metrics,
-  ridge_metrics,
-  polynomial_metrics
-) |>
-  select(model, .metric, .estimate)
-
-metrics_table <- holdout_metrics |>
-  pivot_wider(
-    names_from = .metric,
-    values_from = .estimate
+#| label: regression-metrics
+regression_metrics <- holdout_predictions |>
+  select(precipitation_in, `Dry baseline`, `Historical mean`,
+    `Single-stage polynomial`, `Hurdle model`, `Expected precipitation`) |>
+  pivot_longer(-precipitation_in, names_to = "model", values_to = ".pred") |>
+  group_by(model) |>
+  summarise(
+    rmse = sqrt(mean((precipitation_in - .pred)^2)),
+    mae = mean(abs(precipitation_in - .pred)),
+    wet_rmse = sqrt(mean((precipitation_in[precipitation_in > 0] -
+      .pred[precipitation_in > 0])^2)),
+    .groups = "drop"
   ) |>
   arrange(rmse)
 
-metrics_table |>
-  kable(digits = 4)
+regression_metrics |> kable(digits = 4)
 ```
 
-RMSE emphasizes larger misses, MAE describes typical absolute error, and R² measures improvement relative to a constant mean on the same holdout.
-
-## Observed versus predicted
-
 ```{r}
-#| label: observed-predicted
-#| fig-height: 7
-#| fig-alt: "Faceted observed-versus-predicted plots for wet hours across the four precipitation models."
-prediction_comparison <- bind_rows(
-  baseline_predictions |>
-    mutate(model = "Mean baseline"),
-  linear_predictions |>
-    mutate(model = "Linear regression"),
-  ridge_predictions |>
-    mutate(model = "Ridge regression"),
-  polynomial_predictions |>
-    mutate(model = "Polynomial regression")
-) |>
-  mutate(
-    model = factor(
-      model,
-      levels = c(
-        "Mean baseline",
-        "Linear regression",
-        "Ridge regression",
-        "Polynomial regression"
-      )
-    )
+#| label: occurrence-metrics
+occurrence_metrics <- holdout_predictions |>
+  summarise(
+    pr_auc = pr_auc_vec(rain, rain_probability, event_level = "first"),
+    roc_auc = roc_auc_vec(rain, rain_probability, event_level = "first"),
+    brier_score = brier_class_vec(rain, rain_probability,
+      event_level = "first")
   )
 
-wet_prediction_comparison <- prediction_comparison |>
-  filter(precipitation_in > 0)
-
-ggplot(
-  wet_prediction_comparison,
-  aes(x = precipitation_in, y = .pred)
-) +
-  geom_abline(
-    slope = 1,
-    intercept = 0,
-    color = "#E76F51",
-    linewidth = 0.8
-  ) +
-  geom_point(alpha = 0.35, color = "#2A9D8F") +
-  facet_wrap(
-    vars(model),
-    scales = "free_y",
-    ncol = 2
-  ) +
-  scale_x_sqrt() +
-  scale_y_sqrt() +
-  labs(
-    title = "Observed and predicted precipitation during wet holdout hours",
-    x = "Observed precipitation (inches)",
-    y = "Predicted precipitation (inches)"
-  ) +
-  theme_minimal(base_size = 12) +
-  theme(plot.title = element_text(face = "bold"))
+occurrence_metrics |> kable(digits = 3)
 ```
 
-## Residual comparison
+## Inspect predictions over time
 
 ```{r}
-#| label: residual-comparison
-#| fig-alt: "Faceted residual plots for the four precipitation models."
-residual_comparison <- prediction_comparison |>
-  mutate(residual = precipitation_in - .pred)
+#| label: holdout-series-data
+holdout_daily <- holdout_predictions |>
+  mutate(day = as.Date(date)) |>
+  group_by(day) |>
+  summarise(
+    Observed = sum(precipitation_in),
+    Predicted = sum(`Expected precipitation`),
+    .groups = "drop"
+  ) |>
+  pivot_longer(c(Observed, Predicted), names_to = "series", values_to = "inches")
+```
 
-ggplot(
-  residual_comparison,
-  aes(x = .pred, y = residual)
-) +
-  geom_hline(yintercept = 0, color = "#555555") +
-  geom_point(alpha = 0.3, color = "#457B9D") +
-  geom_smooth(se = FALSE, color = "#E76F51") +
-  facet_wrap(vars(model), scales = "free_x", ncol = 2) +
+```{r}
+#| label: holdout-series
+#| fig-alt: "Observed and predicted daily precipitation totals in the final test period."
+ggplot(holdout_daily, aes(x = day, y = inches, color = series)) +
+  geom_line(linewidth = 0.8) +
+  scale_color_manual(values = c(Observed = "#264653", Predicted = "#E76F51")) +
   labs(
-    title = "Residual structure reveals systematic underprediction",
-    x = "Predicted precipitation (inches)",
-    y = "Observed minus predicted"
+    title = "Observed and predicted precipitation - final holdout",
+    x = "Date", y = "Daily precipitation (inches)", color = NULL
   ) +
   theme_minimal(base_size = 12) +
-  theme(plot.title = element_text(face = "bold"))
+  theme(plot.title = element_text(face = "bold"), legend.position = "top")
+```
+
+```{r}
+#| label: calibration-plot
+#| fig-alt: "Rain probability calibration by prediction decile."
+holdout_predictions |>
+  mutate(probability_bin = ntile(rain_probability, 10)) |>
+  group_by(probability_bin) |>
+  summarise(
+    predicted = mean(rain_probability),
+    observed = mean(rain == "rain"),
+    .groups = "drop"
+  ) |>
+  ggplot(aes(x = predicted, y = observed)) +
+  geom_abline(slope = 1, intercept = 0, color = "#777777") +
+  geom_point(size = 2.5, color = "#2A9D8F") +
+  labs(title = "Calibrated rain probabilities", x = "Predicted", y = "Observed") +
+  theme_minimal(base_size = 12)
 ```
 
 ## Conclusion
 
-- Polynomial regression achieves the lowest holdout RMSE (`r sprintf("%.4f", metrics_table$rmse[metrics_table$model == "Polynomial regression"])`), a `r sprintf("%.1f", 100 * (metrics_table$rmse[metrics_table$model == "Mean baseline"] - metrics_table$rmse[metrics_table$model == "Polynomial regression"]) / metrics_table$rmse[metrics_table$model == "Mean baseline"])`% reduction relative to the mean baseline.
-- Its holdout R² is only `r sprintf("%.3f", metrics_table$rsq_trad[metrics_table$model == "Polynomial regression"])`, so the available contemporaneous predictors explain little of the temporal variation in precipitation.
-- The ridge penalty selected by five-fold cross-validation is `r format(best_penalty$penalty[[1]], digits = 3, scientific = TRUE)`. Ridge and linear regression produce nearly identical RMSE, indicating limited benefit from regularization with only four predictors.
-- The mean baseline has the lowest MAE (`r sprintf("%.4f", metrics_table$mae[metrics_table$model == "Mean baseline"])`) despite the worst RMSE. This metric reversal is consistent with zero inflation: predicting near zero performs well for typical hours, while all models underpredict uncommon heavy-rain events.
-- Operational improvement would require lagged precipitation, radar, cloud, and atmospheric predictors or a two-stage occurrence-and-amount model.
+```{r}
+#| label: conclusion-values
+best_model <- regression_metrics |> slice_min(rmse, n = 1)
+mean_baseline_rmse <- regression_metrics |>
+  filter(model == "Historical mean") |>
+  pull(rmse)
+rmse_improvement <- 100 * (mean_baseline_rmse - best_model$rmse) /
+  mean_baseline_rmse
+```
+
+- The best final prediction is **`r best_model$model`**, with RMSE **`r sprintf("%.4f", best_model$rmse)`** and a **`r sprintf("%.1f", rmse_improvement)`%** reduction relative to the historical-mean baseline.
+- The occurrence model reaches PR AUC **`r sprintf("%.3f", occurrence_metrics$pr_auc)`** and ROC AUC **`r sprintf("%.3f", occurrence_metrics$roc_auc)`** on the untouched final period.
+- The calibration threshold (**`r sprintf("%.2f", best_threshold)`**) and amount correction (**`r sprintf("%.2f", amount_scale)`**) were learned from the middle 10%, not from the final test.
+- The model is reproducible and leakage-aware, but it is not a production nowcast: radar, cloud cover, and denser hourly history would be needed for that claim.
 
 See the [Spanish version](es/index.qmd).

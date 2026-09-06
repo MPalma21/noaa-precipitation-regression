@@ -3,7 +3,7 @@ project:
   output-dir: _site
 
 website:
-  title: "NOAA Precipitation Regression"
+  title: "JFK Precipitation Forecasting"
   navbar:
     left:
       - href: index.qmd
@@ -20,12 +20,14 @@ format:
   html:
     theme: cosmo
     toc: true
-    code-fold: true
+    code-fold: false
+    code-overflow: wrap
     code-tools: true
     include-after-body: assets/code-tools-fix.html
     smooth-scroll: true
 
 execute:
   freeze: auto
+  echo: true
   warning: false
   message: false
