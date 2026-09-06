@@ -23,6 +23,13 @@ library(tidymodels)
 library(here)
 library(knitr)
 stopifnot(requireNamespace("xgboost", quietly = TRUE))
+
+utf8_locale <- if (.Platform$OS.type == "windows") {
+  "English_United States.utf8"
+} else {
+  "C.UTF-8"
+}
+invisible(Sys.setlocale("LC_CTYPE", utf8_locale))
 ```
 
 ## Read the reproducible snapshot

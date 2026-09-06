@@ -68,3 +68,13 @@ test_that("deployment manifest includes the boosted-tree engine", {
   manifest <- read_file(here("manifest.json"))
   expect_match(manifest, '"xgboost"', fixed = TRUE)
 })
+
+test_that("rendered Spanish output preserves Unicode characters", {
+  frozen_output <- read_file(
+    here("_freeze", "es", "index", "execute-results", "html.json")
+  )
+
+  expect_false(str_detect(frozen_output, "<U\\+[0-9A-F]{4,6}>"))
+  expect_match(frozen_output, "Precipitación esperada", fixed = TRUE)
+  expect_match(frozen_output, "reducción de **6.2%**", fixed = TRUE)
+})

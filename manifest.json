@@ -4793,25 +4793,25 @@
   },
   "files": {
     ".github/workflows/validate.yml": {
-      "checksum": "4f189ab3d978ee16a48fd7e6ca0e2527"
+      "checksum": "18b88b58fcd2dc81e41aa9aad72f8cc7"
     },
     "_freeze/es/index/execute-results/html.json": {
-      "checksum": "bda6eafb3ba3ba920bb8816958a555b5"
+      "checksum": "6f668629af23656d00f90ba45d57c267"
     },
     "_freeze/es/index/figure-html/calibration-plot-1.png": {
       "checksum": "ff28231b1f683b46866cde1e4391eac2"
     },
     "_freeze/es/index/figure-html/daily-series-1.png": {
-      "checksum": "b235860f97cce3ce67652797ff7544f9"
+      "checksum": "64b708aa7a3e9e8c3a9025dfa7d9847b"
     },
     "_freeze/es/index/figure-html/holdout-series-1.png": {
-      "checksum": "9c6b761ec1e230982d96aea4e207bced"
+      "checksum": "0fb712014bb84adac6f014e2ab2ede43"
     },
     "_freeze/es/index/figure-html/precipitation-distribution-1.png": {
-      "checksum": "62a93635e9fd0f086d08e94b425ded4e"
+      "checksum": "9b07ef76d174edc45998193139fdfb74"
     },
     "_freeze/index/execute-results/html.json": {
-      "checksum": "52eddf7706cfe1df979fe05ab2bc0856"
+      "checksum": "cbae75e26aa9a02c7948dbdd05cc028d"
     },
     "_freeze/index/figure-html/calibration-plot-1.png": {
       "checksum": "9849b0a2a05cab850ab22a33320038d6"
@@ -4829,25 +4829,25 @@
       "checksum": "722242f7b6e0fa3b8d25070388a5c826"
     },
     "_quarto.yml": {
-      "checksum": "bc8c311fed495df30a7b661c72084560"
+      "checksum": "f7b57cf0ca100435910747bc71cf78e6"
     },
     "_site/es/index.html": {
-      "checksum": "809d594bac69b61a0b1167c9928a102b"
+      "checksum": "404e4c14607947e56f75dcf39e7ee7c2"
     },
     "_site/es/index_files/figure-html/calibration-plot-1.png": {
       "checksum": "ff28231b1f683b46866cde1e4391eac2"
     },
     "_site/es/index_files/figure-html/daily-series-1.png": {
-      "checksum": "b235860f97cce3ce67652797ff7544f9"
+      "checksum": "64b708aa7a3e9e8c3a9025dfa7d9847b"
     },
     "_site/es/index_files/figure-html/holdout-series-1.png": {
-      "checksum": "9c6b761ec1e230982d96aea4e207bced"
+      "checksum": "0fb712014bb84adac6f014e2ab2ede43"
     },
     "_site/es/index_files/figure-html/precipitation-distribution-1.png": {
-      "checksum": "62a93635e9fd0f086d08e94b425ded4e"
+      "checksum": "9b07ef76d174edc45998193139fdfb74"
     },
     "_site/index.html": {
-      "checksum": "118c0fd6ad22dafef1d583d2958db463"
+      "checksum": "84d146a211c99b87debdfb0396ba4c6b"
     },
     "_site/index_files/figure-html/calibration-plot-1.png": {
       "checksum": "9849b0a2a05cab850ab22a33320038d6"
@@ -4862,7 +4862,7 @@
       "checksum": "525334e3cf0abc0ef0bec78d1f49d008"
     },
     "_site/search.json": {
-      "checksum": "15fdb9a17b713603f56f3f6f93615b8b"
+      "checksum": "3290f9819af7f256703f19afe253c84f"
     },
     "_site/site_libs/bootstrap/bootstrap-7d8f446abc168d75111c8ab93f0c9211.min.css": {
       "checksum": "7d8f446abc168d75111c8ab93f0c9211"
@@ -4934,19 +4934,19 @@
       "checksum": "2b5fe973d6ad1efc97630b5aaa861a34"
     },
     "es/index.qmd": {
-      "checksum": "ed35142b9fae9f35588d1bac3b301656"
+      "checksum": "0d15124b8447a069cfe78733758b7452"
     },
     "index.qmd": {
-      "checksum": "ba5c76d5385ca16020b488874e6c6472"
+      "checksum": "cc9a46ab7fbbc5ed25a0e5867a047c4b"
     },
     "LICENSE": {
       "checksum": "662ecf378d290224c6e46257db0861a7"
     },
     "README.md": {
-      "checksum": "377e6fe66affe022ca3f51236c029f99"
+      "checksum": "03e33e21e343815aba3274a7557349ed"
     },
     "tests/testthat/test-analysis.R": {
-      "checksum": "be331e4cdfb502f53d1f60b018ff7638"
+      "checksum": "e944c07ad40796cfd99d7c1012e9669d"
     }
   },
   "users": null
